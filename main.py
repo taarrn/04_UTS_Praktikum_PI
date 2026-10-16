@@ -1,5 +1,11 @@
+import re
 import time
+import pandas as pd
 import numpy as np
+import nltk
+
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
 
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -7,8 +13,55 @@ from sklearn.metrics.pairwise import cosine_similarity
 from whoosh.index import open_dir, exists_in
 from whoosh.qparser import QueryParser
 
-from preprocessing import preprocess_text
 from indexing import INDEX_DIR, load_and_index_datasets
+
+# Unduh resource NLTK
+nltk.download('punkt', quiet=True)
+nltk.download('stopwords', quiet=True)
+
+stemmer = None
+list_stopwords = set(stopwords.words('indonesian'))
+
+
+def get_stemmer():
+    """Memuat Sastrawi saat dibutuhkan."""
+    global stemmer
+
+    if stemmer is None:
+        from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
+        factory = StemmerFactory()
+        stemmer = factory.create_stemmer()
+
+    return stemmer
+
+
+def preprocess_text(text, use_stemming=True):
+    """Membersihkan dan memproses teks."""
+
+    if not text or pd.isna(text):
+        return ""
+
+    text = str(text).lower()
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    tokens = word_tokenize(text)
+
+    filtered = [
+        token for token in tokens
+        if token.isalpha()
+        and token not in list_stopwords
+        and len(token) > 2
+    ]
+
+    if use_stemming:
+        active_stemmer = get_stemmer()
+        filtered = [
+            active_stemmer.stem(token)
+            for token in filtered
+        ]
+
+    return " ".join(filtered)
 
 
 def search_query(query_text, top_k=5):
@@ -20,7 +73,6 @@ def search_query(query_text, top_k=5):
 
     start_time = time.time()
 
-    # Preprocessing query tanpa stemming agar konsisten dengan indeks
     clean_query = preprocess_text(
         query_text,
         use_stemming=False
@@ -33,11 +85,7 @@ def search_query(query_text, top_k=5):
     ix = open_dir(INDEX_DIR)
 
     with ix.searcher() as searcher:
-        parser = QueryParser(
-            "clean_content",
-            ix.schema
-        )
-
+        parser = QueryParser("clean_content", ix.schema)
         parsed_query = parser.parse(clean_query)
         results = searcher.search(parsed_query, limit=100)
 
@@ -58,19 +106,13 @@ def search_query(query_text, top_k=5):
 
             clean_docs.append(hit['clean_content'])
 
-    # Representasi Bag of Words
     vectorizer = CountVectorizer()
     X_docs = vectorizer.fit_transform(clean_docs)
     query_vec = vectorizer.transform([clean_query])
 
-    # Perhitungan cosine similarity
-    scores = cosine_similarity(
-        query_vec,
-        X_docs
-    ).flatten()
+    scores = cosine_similarity(query_vec, X_docs).flatten()
 
     ranked_indices = np.argsort(scores)[::-1][:top_k]
-
     elapsed = time.time() - start_time
 
     print(
@@ -119,8 +161,6 @@ def main():
         pilihan = input("Pilih menu: ").strip()
 
         if pilihan == "1":
-
-            # Input limit dari pengguna
             batas = input(
                 "\nMasukkan limit per dataset "
                 "(Masukkan Rentang Dokumen): "
@@ -128,7 +168,6 @@ def main():
 
             if batas.lower() == "none":
                 limit = None
-
             else:
                 try:
                     limit = int(batas)
@@ -142,13 +181,12 @@ def main():
                     continue
 
             load_and_index_datasets(
+                preprocess_text,
                 limit_per_file=limit
             )
 
         elif pilihan == "2":
-            query = input(
-                "\nMasukkan query pencarian: "
-            ).strip()
+            query = input("\nMasukkan query pencarian: ").strip()
 
             if query:
                 search_query(query, top_k=5)
